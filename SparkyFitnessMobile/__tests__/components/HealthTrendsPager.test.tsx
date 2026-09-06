@@ -326,6 +326,10 @@ describe('HealthTrendsPager', () => {
     expect(chartOrder()).toEqual(['steps-chart']);
   });
 
+  // The charts are mocked here, so this only asserts which page the fallback picks. That
+  // the page is not blank is each chart's own responsibility, covered by its empty-state
+  // test — see `WeightLineChart.test.tsx`, which is where the fallback used to render
+  // nothing at all.
   test('falls back to the first shown trend when every shown trend is empty', () => {
     renderPager({
       steps: emptySeries(),

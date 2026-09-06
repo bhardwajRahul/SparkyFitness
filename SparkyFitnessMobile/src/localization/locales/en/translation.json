@@ -4083,7 +4083,8 @@
   "charts": {
     "weight": {
       "title": "Weight",
-      "loadFailed": "Failed to load weight data"
+      "loadFailed": "Failed to load weight data",
+      "empty": "No weight data for this period"
     },
     "steps": {
       "title": "Steps",
