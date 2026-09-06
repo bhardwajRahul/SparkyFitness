@@ -250,10 +250,14 @@ export function createReorderRowPanGesture({
     .onUpdate((event) => {
       panY.value = event.translationY;
     })
-    .onEnd(() => {
+    .onEnd((_event, success) => {
       const from = activeDragIndex.value;
       const to = targetIndex.value;
-      if (from >= 0 && from !== to) {
+      // An ACTIVE pan that is cancelled or fails — the app backgrounds, a parent
+      // navigator gesture takes over — lands here too, with `success` false. Only a
+      // real drop may commit: treating a cancellation as one silently reorders the
+      // list, and persists it, on a move the user never finished making.
+      if (success && from >= 0 && from !== to) {
         // Commit handoff: keep the active row's final translate while the JS reorder
         // state commits — no snap-back to origin before React re-renders the row at its
         // destination.
