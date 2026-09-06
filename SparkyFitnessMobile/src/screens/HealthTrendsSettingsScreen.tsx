@@ -6,13 +6,10 @@ import {
   View,
   type AccessibilityActionEvent,
 } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import { GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
-  runOnJS,
-  useAnimatedStyle,
   useDerivedValue,
   useSharedValue,
-  withSpring,
   type SharedValue,
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -21,8 +18,12 @@ import { useCSSVariable } from 'uniwind';
 import { useActiveWorkoutBarPadding } from '../components/ActiveWorkoutBar';
 import Icon from '../components/Icon';
 import {
-  computeReorderPreviewShift,
   computeReorderTargetIndex,
+  createReorderRowPanGesture,
+  REORDER_ROW_HEIGHT,
+  resetReorderDragPreview,
+  useReorderRowGeometry,
+  useReorderRowPreviewStyle,
 } from '../components/WorkoutReorderList';
 import {
   HEALTH_TREND_LABELS,
@@ -45,61 +46,7 @@ type HealthTrendsSettingsScreenProps =
 
 // Every row shares one height, including the divider, so the drag geometry has a single
 // stride and the shared reorder worklets stay exact.
-const ROW_HEIGHT = 64;
-const ROW_GAP = 0;
-const LONG_PRESS_MS = 150;
-
-function useTrendRowDragPreviewStyle(
-  rowIndex: number,
-  activeDragIndex: SharedValue<number>,
-  panY: SharedValue<number>,
-  committingTranslate: SharedValue<number>,
-  targetIndex: SharedValue<number>,
-  strides: number[]
-) {
-  return useAnimatedStyle(() => {
-    const active = activeDragIndex.value;
-    if (active === rowIndex) {
-      const translateY =
-        committingTranslate.value !== 0
-          ? committingTranslate.value
-          : panY.value;
-      return {
-        transform: [{ translateY }, { scale: 1.02 }],
-        zIndex: 10,
-        elevation: 8,
-        shadowOpacity: 0.16,
-        shadowRadius: 8,
-        shadowOffset: { width: 0, height: 4 },
-      };
-    }
-    // Reanimated applies animated styles as diffs, so the lift shadow must be zeroed in
-    // every non-dragged branch.
-    if (active < 0) {
-      return {
-        transform: [{ translateY: 0 }, { scale: 1 }],
-        zIndex: 0,
-        elevation: 0,
-        shadowOpacity: 0,
-      };
-    }
-    const shift = computeReorderPreviewShift(
-      rowIndex,
-      active,
-      targetIndex.value,
-      strides[active]
-    );
-    return {
-      transform: [
-        { translateY: withSpring(shift, { damping: 44, stiffness: 960 }) },
-        { scale: 1 },
-      ],
-      zIndex: 0,
-      elevation: 0,
-      shadowOpacity: 0,
-    };
-  });
-}
+const ROW_HEIGHT = REORDER_ROW_HEIGHT;
 
 const HealthTrendListRow: React.FC<{
   trendKey: HealthTrendKey;
@@ -130,30 +77,16 @@ const HealthTrendListRow: React.FC<{
 }) => {
   const { t } = useTranslation();
 
-  const dragGesture = Gesture.Pan()
-    .activateAfterLongPress(LONG_PRESS_MS)
-    .onStart(() => {
-      activeDragIndex.value = index;
-      panY.value = 0;
-    })
-    .onUpdate((event) => {
-      panY.value = event.translationY;
-    })
-    .onEnd(() => {
-      const from = activeDragIndex.value;
-      const to = targetIndex.value;
-      if (from >= 0 && from !== to) {
-        // Keep the final translate while the move commits so the row does not snap back
-        // to its origin before React re-renders it.
-        committingTranslate.value = panY.value;
-        runOnJS(onMove)(from, to);
-        return;
-      }
-      activeDragIndex.value = -1;
-      panY.value = 0;
-    });
+  const dragGesture = createReorderRowPanGesture({
+    index,
+    activeDragIndex,
+    panY,
+    committingTranslate,
+    targetIndex,
+    onMove,
+  });
 
-  const previewStyle = useTrendRowDragPreviewStyle(
+  const previewStyle = useReorderRowPreviewStyle(
     index,
     activeDragIndex,
     panY,
@@ -249,7 +182,7 @@ const HiddenDividerRow: React.FC<{
 
   // Animated so it shifts with its neighbours during a drag, but it carries no gesture:
   // the divider is a fixed landmark, never the dragged row.
-  const previewStyle = useTrendRowDragPreviewStyle(
+  const previewStyle = useReorderRowPreviewStyle(
     index,
     activeDragIndex,
     panY,
@@ -299,17 +232,7 @@ const HealthTrendsSettingsScreen: React.FC<
     [healthTrendOrder, hiddenHealthTrends]
   );
 
-  const strides = rows.map(() => ROW_HEIGHT + ROW_GAP);
-  const offsets = useMemo(() => {
-    const rowOffsets: number[] = [];
-    let runningOffset = 0;
-    for (const stride of strides) {
-      rowOffsets.push(runningOffset);
-      runningOffset += stride;
-    }
-    return rowOffsets;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows.length]);
+  const { strides, offsets } = useReorderRowGeometry(rows.length);
 
   const activeDragIndex = useSharedValue(-1);
   const panY = useSharedValue(0);
@@ -346,9 +269,7 @@ const HealthTrendsSettingsScreen: React.FC<
   useEffect(() => {
     if (!pendingDragResetRef.current) return;
     pendingDragResetRef.current = false;
-    committingTranslate.value = 0;
-    activeDragIndex.value = -1;
-    panY.value = 0;
+    resetReorderDragPreview(activeDragIndex, panY, committingTranslate);
   }, [rows, committingTranslate, activeDragIndex, panY]);
 
   const dividerIndex = rows.indexOf(HEALTH_TREND_DIVIDER);
