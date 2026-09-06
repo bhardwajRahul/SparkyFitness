@@ -646,11 +646,15 @@ const DashboardScreen: React.FC<DashboardScreenProps> = ({ navigation }) => {
         <Text className="text-text-primary text-xl font-bold mb-2">
           {t('dashboard.healthTrends', { defaultValue: 'Health Trends' })}
         </Text>
-        <SegmentedControl
-          segments={RANGE_SEGMENTS(t)}
-          activeKey={trendsRange}
-          onSelect={setTrendsRange}
-        />
+        {/* With every graph hidden the pager shows a card explaining that, and a range
+            control over it would only change a window nothing is plotted in. */}
+        {visibleTrends.length > 0 && (
+          <SegmentedControl
+            segments={RANGE_SEGMENTS(t)}
+            activeKey={trendsRange}
+            onSelect={setTrendsRange}
+          />
+        )}
 
         <HealthTrendsPager
           steps={trends.steps}
