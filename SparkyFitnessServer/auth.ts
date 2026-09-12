@@ -92,6 +92,32 @@ authPool.on('error', (err) => {
 // Mutation of this array will be visible to Better Auth since it holds the reference
 // @ts-expect-error
 const dynamicTrustedProviders = [];
+/**
+ * Origins of the configured SSO identity providers.
+ *
+ * Better Auth 1.7 validates the OIDC discovery URL -- and every endpoint inside
+ * the discovery document -- against `trustedOrigins` before fetching any of
+ * them (an SSRF guard). An IdP lives on its own domain, so without this the
+ * whole list is rejected with `discovery_untrusted_origin` and SSO sign-in
+ * fails with a 400.
+ *
+ * Kept in the same persistent-reference style as dynamicTrustedProviders, and
+ * refreshed by the same syncTrustedProviders() call, so the getter Better Auth
+ * holds always sees current data.
+ */
+const dynamicTrustedSsoOrigins: string[] = [];
+/**
+ * Origin of a provider URL, or null when it is missing or unparseable.
+ * A bad row must not take down origin resolution for every other provider.
+ */
+function originOf(url: unknown): string | null {
+  if (typeof url !== 'string' || !url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
 // Function to sync trusted providers from database
 async function syncTrustedProviders() {
   try {
@@ -105,6 +131,34 @@ async function syncTrustedProviders() {
       '[AUTH] Synced trusted SSO providers for auto-linking:',
       // @ts-expect-error
       dynamicTrustedProviders
+    );
+    // Collect each provider's own origin so 1.7's discovery SSRF guard allows
+    // fetching its well-known document and the endpoints that document names.
+    const rows = await oidcProviderRepository.getOidcProviders();
+    const ssoOrigins = new Set<string>();
+    for (const row of rows ?? []) {
+      // getOidcProviders() renames the columns on the way out: the issuer is
+      // `issuer_url` and the endpoints are camelCase. Reading the raw column
+      // names here would silently collect nothing but the discovery origin,
+      // which only happens to work while every endpoint shares one host.
+      for (const candidate of [
+        row?.issuer_url,
+        row?.discoveryEndpoint,
+        row?.authorizationEndpoint,
+        row?.tokenEndpoint,
+        row?.userInfoEndpoint,
+        row?.jwksEndpoint,
+      ]) {
+        const origin = originOf(candidate);
+        if (origin) ssoOrigins.add(origin);
+      }
+    }
+    dynamicTrustedSsoOrigins.length = 0;
+    dynamicTrustedSsoOrigins.push(...ssoOrigins);
+    log(
+      'info',
+      '[AUTH] Synced trusted SSO provider origins:',
+      dynamicTrustedSsoOrigins
     );
     // @ts-expect-error
     return dynamicTrustedProviders;
@@ -319,8 +373,12 @@ const auth = betterAuth({
       process.env.SPARKY_FITNESS_EXTRA_TRUSTED_ORIGINS?.includes('http://')
         ? false
         : process.env.SPARKY_FITNESS_FRONTEND_URL?.startsWith('https'),
-    // @ts-expect-error
-    trustProxy: true,
+    // Honour `x-forwarded-host` / `x-forwarded-proto`. Since 1.7 Better Auth
+    // resolves the request origin from the `Host` header and ignores forwarded
+    // headers unless this is set, which breaks sign-in for every deployment
+    // sitting behind nginx (i.e. the default docker-compose setup).
+    // Supersedes the old `trustProxy: true`, which was never a real option.
+    trustedProxyHeaders: true,
     crossSubDomainCookies: {
       enabled: false,
     },
@@ -371,6 +429,27 @@ const auth = betterAuth({
   account: {
     accountLinking: {
       enabled: true,
+      // Better Auth 1.7 refuses to link an SSO identity to an existing user
+      // unless that user's email is already verified locally (it guards against
+      // an attacker pre-registering an unverified account at a victim's address
+      // and capturing their first SSO sign-in).
+      //
+      // SparkyFitness has no email-verification flow to satisfy that gate:
+      // `requireEmailVerification` is false, no verification email is ever sent,
+      // and there is no verify route -- so nothing sets email_verified except
+      // an incidental magic-link or email-OTP sign-in, which itself needs SMTP
+      // that many self-hosted instances never configure. Leaving the gate on
+      // therefore breaks SSO permanently for every existing account rather than
+      // prompting anyone to verify anything.
+      //
+      // The residual risk needs signup to be open on this instance AND the
+      // attacker to register the victim's address before the victim's first SSO
+      // login; SPARKY_FITNESS_DISABLE_SIGNUP closes that off entirely.
+      //
+      // NOTE: deprecated upstream -- the gate becomes unconditional in the next
+      // minor, so real email verification (or auto-verifying on a trusted IdP
+      // assertion) has to land before that upgrade.
+      requireLocalEmailVerified: false,
       // Use a getter to ensure Better Auth always checks the current state of our dynamic list
       get trustedProviders() {
         log(
@@ -412,7 +491,13 @@ const auth = betterAuth({
   // Trust proxy (for Docker/Nginx deployments)
   // NOTE: Better Auth calls this with the raw Request object directly (not a context wrapper)
   trustedOrigins: (request) => {
-    const cleanOrigins = [...getBaseTrustedOrigins(), 'sparkyfitnessmobile://'];
+    const cleanOrigins = [
+      ...getBaseTrustedOrigins(),
+      'sparkyfitnessmobile://',
+      // IdP origins -- required since 1.7 validates OIDC discovery URLs against
+      // this list before fetching them.
+      ...dynamicTrustedSsoOrigins,
+    ];
     const { origin: originHeader, referer: refererHeader } =
       extractRequestHeaders(request);
     // Identify if this is a non-primary origin (IP, extra domain, etc.) or null
@@ -709,7 +794,26 @@ const auth = betterAuth({
         await sendMagicLinkEmail(email, url);
       },
     }),
-    admin(),
+    // The admin plugin contributes its own user/session columns, and those are
+    // separate from the root `user.fields` map above -- without this block it
+    // looks for literal `banReason` / `banExpires` / `impersonatedBy` columns.
+    admin({
+      schema: {
+        user: {
+          fields: {
+            role: 'role',
+            banned: 'banned',
+            banReason: 'ban_reason',
+            banExpires: 'ban_expires',
+          },
+        },
+        session: {
+          fields: {
+            impersonatedBy: 'impersonated_by',
+          },
+        },
+      },
+    }),
     twoFactor({
       issuer:
         process.env.NODE_ENV === 'production'
@@ -730,6 +834,12 @@ const auth = betterAuth({
             backupCodes: 'backup_codes',
             createdAt: 'created_at',
             updatedAt: 'updated_at',
+            // Added in Better Auth 1.7 to back the TOTP lockout / re-enrolment
+            // guard. Every verify reads `lockedUntil` and bumps the counter, so
+            // these are required, not optional extras.
+            verified: 'verified',
+            failedVerificationCount: 'failed_verification_count',
+            lockedUntil: 'locked_until',
           },
         },
       },
@@ -749,6 +859,10 @@ const auth = betterAuth({
         issuer: 'issuer',
         oidcConfig: 'oidc_config', // Added this mapping
         samlConfig: 'saml_config', // Added this mapping
+        // Better Auth 1.7 keys SSO providers to an owning user (and optionally
+        // an organization); without these it looks for literal camelCase columns.
+        userId: 'user_id',
+        organizationId: 'organization_id',
         domain: 'domain',
         additionalConfig: 'additional_config',
         createdAt: 'created_at',

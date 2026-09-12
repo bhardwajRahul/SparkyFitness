@@ -41,7 +41,7 @@ function makeContext() {
     options: {
       rateLimit: { ...RATE_LIMIT_CONFIG },
       plugins: [],
-      advanced: { trustProxy: true },
+      advanced: { trustedProxyHeaders: true },
       trustedOrigins: ['https://example.com'],
     },
   };
@@ -49,8 +49,6 @@ function makeContext() {
 describe('Auth rate limit integration', () => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let onRequestRateLimit: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let onResponseRateLimit: any;
   beforeAll(async () => {
     const mod = await import(
       path.resolve(
@@ -59,12 +57,17 @@ describe('Auth rate limit integration', () => {
       )
     );
     onRequestRateLimit = mod.onRequestRateLimit;
-    onResponseRateLimit = mod.onResponseRateLimit;
   });
   /**
    * Helper: send `count` requests and return responses.
    * A return of undefined means the request was allowed (no rate limit hit).
    * A Response with status 429 means rate-limited.
+   *
+   * Better Auth 1.7 counts the request in a single atomic check-and-increment
+   * inside `onRequestRateLimit`. Up to 1.6 the read happened on the request and
+   * the write-back on the response, via a second `onResponseRateLimit` export
+   * that no longer exists -- so concurrent requests could all clear a stale
+   * read before any increment landed. Nothing replaces that call here.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async function sendRequests(endpoint: any, count: any, ip: any) {
@@ -74,9 +77,6 @@ describe('Auth rate limit integration', () => {
       const req = makeRequest(endpoint, ip);
       const result = await onRequestRateLimit(req, ctx);
       results.push(result);
-      if (result === undefined) {
-        await onResponseRateLimit(req, ctx);
-      }
     }
     return results;
   }
@@ -276,8 +276,6 @@ describe('SparkyFitness sign-in customRules', () => {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let onRequestRateLimit: any;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let onResponseRateLimit: any;
 
   beforeAll(async () => {
     const mod = await import(
@@ -287,7 +285,6 @@ describe('SparkyFitness sign-in customRules', () => {
       )
     );
     onRequestRateLimit = mod.onRequestRateLimit;
-    onResponseRateLimit = mod.onResponseRateLimit;
   });
 
   function makeCustomContext() {
@@ -301,7 +298,7 @@ describe('SparkyFitness sign-in customRules', () => {
       options: {
         rateLimit: { ...config },
         plugins: [],
-        advanced: { trustProxy: true },
+        advanced: { trustedProxyHeaders: true },
         trustedOrigins: ['https://example.com'],
       },
     };
@@ -315,9 +312,6 @@ describe('SparkyFitness sign-in customRules', () => {
       const req = makeRequest(endpoint, ip);
       const result = await onRequestRateLimit(req, ctx);
       results.push(result);
-      if (result === undefined) {
-        await onResponseRateLimit(req, ctx);
-      }
     }
     return results;
   }
