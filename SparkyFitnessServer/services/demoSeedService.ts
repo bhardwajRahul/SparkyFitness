@@ -437,9 +437,12 @@ export async function seedDemoUser(): Promise<string> {
           [hashedPassword, userId]
         );
         if ((updateRes?.rowCount ?? 0) === 0) {
+          // account_id is the user's id, not the email -- Better Auth matches
+          // the credential account on `accountId === user.id`, so an email here
+          // makes demo sign-in fail with "User not found".
           await client.query(
             'INSERT INTO "account" (id, account_id, provider_id, user_id, password, created_at, updated_at) VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW(), NOW())',
-            [email, 'credential', userId, hashedPassword]
+            [userId, 'credential', userId, hashedPassword]
           );
         }
       }

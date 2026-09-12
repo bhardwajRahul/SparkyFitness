@@ -15,10 +15,16 @@ async function createUser(
       'INSERT INTO "user" (id, email, name, image, created_at, updated_at) VALUES ($1, $2, $3, $4, now(), now())',
       [userId, email, full_name, null]
     );
-    // Insert into "account" for email/password
+    // Insert into "account" for email/password.
+    // account_id MUST be the user's id, not their email: Better Auth's
+    // sign-in looks for `providerId === 'credential' && accountId === user.id`,
+    // so an email here makes the account invisible and sign-in fails with
+    // "User not found" even though the row exists. (Tolerated before 1.7,
+    // which started matching on accountId.) Social/OIDC rows are different --
+    // those correctly store the provider's subject.
     await client.query(
       'INSERT INTO "account" (id, account_id, provider_id, user_id, password, created_at, updated_at) VALUES (gen_random_uuid(), $1, $2, $3, $4, now(), now())',
-      [email, 'credential', userId, hashedPassword]
+      [userId, 'credential', userId, hashedPassword]
     );
     // Initialize profile and goals safely
     await ensureUserInitialization(userId, full_name, null, client);

@@ -206,6 +206,33 @@ app.use(
     );
   })
 );
+// OAuth/OIDC discovery probes must 404, not 401.
+//
+// This server authenticates with API keys and session cookies; it is not an
+// OAuth authorization server. When an MCP client's first request is rejected it
+// follows the spec and probes for OAuth metadata. Falling through to
+// `authenticate` answered those probes with 401, which reads as "OAuth exists,
+// keep negotiating", so the client retried discovery in a loop (and then failed
+// Dynamic Client Registration with a 404 anyway). A 404 says "no OAuth here",
+// and the client falls back to the bearer token it was configured with.
+//
+// Registered before the /mcp mount and the global `authenticate` so it beats
+// both. Deliberately an explicit list rather than all of `/.well-known/*`, so
+// an ACME http-01 challenge served through this app is untouched.
+const OAUTH_DISCOVERY_PATHS = new Set([
+  '/.well-known/openid-configuration',
+  '/.well-known/oauth-authorization-server',
+  '/.well-known/oauth-protected-resource',
+]);
+app.use((req, res, next) => {
+  // Strip an optional /mcp prefix: clients probe both the origin root and the
+  // MCP mount point, and Express has not applied the mount prefix yet here.
+  const path = req.path.startsWith('/mcp/')
+    ? req.path.slice('/mcp'.length)
+    : req.path;
+  if (!OAUTH_DISCOVERY_PATHS.has(path)) return next();
+  res.status(404).json({ error: 'not_found' });
+});
 // External MCP endpoint — a self-contained chain mounted top-level (not /api)
 // to skip the /api/auth interceptor and cache-control middleware. It sits
 // before the global 50mb parser so its route-local 1mb parser wins (the global
